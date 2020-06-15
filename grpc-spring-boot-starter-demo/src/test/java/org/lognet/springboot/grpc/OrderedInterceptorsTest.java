@@ -1,30 +1,28 @@
 package org.lognet.springboot.grpc;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
-import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
 import io.grpc.ServerCall;
 import io.grpc.ServerCall.Listener;
 import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
-import io.grpc.examples.GreeterGrpc;
-import io.grpc.examples.GreeterGrpc.GreeterBlockingStub;
-import io.grpc.examples.GreeterOuterClass;
-import java.util.ArrayList;
-import java.util.List;
-import org.junit.After;
+import org.junit.Assert;
 import org.junit.Before;
-import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.lognet.springboot.grpc.OrderedInterceptorsTest.TheConfiguration;
+import org.lognet.springboot.grpc.context.LocalRunningGrpcPort;
 import org.lognet.springboot.grpc.demo.DemoApp;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.test.context.junit4.SpringRunner;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 
 /**
@@ -32,36 +30,56 @@ import org.springframework.test.context.junit4.SpringRunner;
  */
 @RunWith(SpringRunner.class)
 @SpringBootTest(classes = {DemoApp.class, TheConfiguration.class},
-    webEnvironment = WebEnvironment.NONE, properties = "grpc.port=7778")
-public class OrderedInterceptorsTest {
+    webEnvironment = WebEnvironment.NONE, properties = {"grpc.port=7778","grpc.shutdownGrace=-1"})
+public class OrderedInterceptorsTest extends GrpcServerTestBase{
 
-  private ManagedChannel channel;
+  @LocalRunningGrpcPort
+  int runningPort;
+
   private static List<Integer> calledInterceptors = new ArrayList<>();
+
 
   @Before
   public void setup() {
-    channel = ManagedChannelBuilder.forAddress("localhost", 7778)
-        .usePlaintext(true)
-        .build();
+
     calledInterceptors.clear();
   }
 
-  @After
-  public void tearDown() {
-    channel.shutdown();
+  @Override
+  protected void beforeGreeting() {
+    Assert.assertEquals(7778, runningPort);
+    Assert.assertEquals(getPort(), runningPort);
   }
 
-  @Test
-  public void test_interceptor_order() throws Exception {
-    final GreeterBlockingStub greeterStub = GreeterGrpc.newBlockingStub(channel);
-    final GreeterOuterClass.HelloRequest helloRequest = GreeterOuterClass.HelloRequest.newBuilder().setName("hello")
-        .build();
-    greeterStub.sayHello(helloRequest).getMessage();
-    assertThat(calledInterceptors).containsExactly(1, 2, 3, 4, 10, 100);
+  @Override
+  protected void afterGreeting() {
+    assertThat(calledInterceptors).containsExactly(1, 2, 3, 4,5,6, 10, 100);
   }
+
+
 
   @Configuration
   public static class TheConfiguration {
+
+
+    @Bean
+    @GRpcGlobalInterceptor
+    public  ServerInterceptor mySixthInterceptor(){
+      return new MySixthInterceptor();
+    }
+
+    class MySixthInterceptor implements ServerInterceptor,Ordered {
+      @Override
+      public <ReqT, RespT> Listener<ReqT> interceptCall(ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
+        calledInterceptors.add(getOrder());
+        return next.startCall(call, headers);
+      }
+
+      @Override
+      public int getOrder() {
+        return 6;
+      }
+    }
 
     @GRpcGlobalInterceptor
     @Order(2)
@@ -111,6 +129,18 @@ public class OrderedInterceptorsTest {
       }
     }
 
+    @GRpcGlobalInterceptor
+    @Order // no value means lowest priority amongst all @Ordered, but higher priority than interceptors without the annotation
+    static class DefaultOrderedInterceptor implements ServerInterceptor {
+
+      @Override
+      public <ReqT, RespT> Listener<ReqT> interceptCall(ServerCall<ReqT, RespT> call, Metadata headers,
+                                                        ServerCallHandler<ReqT, RespT> next) {
+        calledInterceptors.add(10);
+        return next.startCall(call, headers);
+      }
+    }
+
     // interceptors without any annotation will always be executed last, losing to any defined @Order
     @GRpcGlobalInterceptor
     static class UnorderedInterceptor implements ServerInterceptor {
@@ -123,16 +153,24 @@ public class OrderedInterceptorsTest {
       }
     }
 
+    @Bean
     @GRpcGlobalInterceptor
-    @Order // no value means lowest priority amongst all @Ordered, but higher priority than iceptors without the annot
-    static class DefaultOrderedInterceptor implements ServerInterceptor {
+    public  ServerInterceptor myInterceptor(){
+      return new MyInterceptor();
+    }
 
+     class MyInterceptor implements ServerInterceptor,Ordered {
       @Override
-      public <ReqT, RespT> Listener<ReqT> interceptCall(ServerCall<ReqT, RespT> call, Metadata headers,
-          ServerCallHandler<ReqT, RespT> next) {
-        calledInterceptors.add(10);
+      public <ReqT, RespT> Listener<ReqT> interceptCall(ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
+        calledInterceptors.add(5);
         return next.startCall(call, headers);
       }
-    }
+
+       @Override
+       public int getOrder() {
+         return 5;
+       }
+     }
+
   }
 }
